@@ -1,39 +1,4 @@
 import replicate
-
-if False:
-    # Input images:
-    # Him (only): https://pixtoon-media.eviworld.com/teach-me-tender/teri.jpeg
-    # Her (only): https://pixtoon-media.eviworld.com/teach-me-tender/her.jpeg
-    # Both: https://pixtoon-media.eviworld.com/teach-me-tender/both.jpeg
-    output_url = replicate.run(
-        "black-forest-labs/flux-kontext-pro",
-        input={
-            "prompt": "Make them outside in a snowy Toronto wearing winter clothes, both smiling and happy, his speech bubble says 'Let's go!'",
-            "input_image": "https://pixtoon-media.eviworld.com/teach-me-tender/both.jpeg",
-            "aspect_ratio": "match_input_image",
-            "output_format": "jpg",
-            "safety_tolerance": 6,
-        },
-    )
-    print(output_url)
-
-# Voice:
-# Teri: "voice": "Orion"
-# Her: "voice": "Aurora"
-# Narrator: "voice": "Ember"
-output_wav_file_url = replicate.run(
-    "resemble-ai/chatterbox-pro",
-    input={
-        "pitch": "medium",
-        "voice": "Orion",
-        "prompt": "hello!",
-        "temperature": 0.8,
-        "exaggeration": 0.5,
-    },
-)
-print(output_wav_file_url)
-
-import replicate
 import requests
 import os
 import concurrent.futures
@@ -266,4 +231,4 @@ def create_comic_story(prompts, image_urls, output_dir):
 
 
 if __name__ == "__main__":
-    # create_comic_story(COMIC_PROMPTS, IMAGE_URLS, OUTPUT_DIR)
+    create_comic_story(COMIC_PROMPTS, IMAGE_URLS, OUTPUT_DIR)
