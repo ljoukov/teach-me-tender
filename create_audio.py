@@ -5,32 +5,24 @@ import subprocess
 import time
 from dotenv import load_dotenv
 import concurrent.futures
+import threading
 
 # --- Configuration ---
-
-# Load environment variables from .env file (for REPLICATE_API_TOKEN)
 load_dotenv()
-
-# Check if the API token is available
 if not os.getenv("REPLICATE_API_TOKEN"):
     raise Exception("Replicate API token not found. Please set it in a .env file.")
 
-# Voice mapping for each character role
-VOICES = {
-    "narrator": "Ember",  # Deep, classic narrator voice
-    "him": "Orion",  # Tedi's voice
-    "her": "Aurora",  # Her voice
-}
-
-# Output directories
+VOICES = {"narrator": "Ember", "him": "Orion", "her": "Aurora"}
 AUDIO_OUTPUT_DIR = "comic_audio"
 TEMP_DIR = "temp_audio_parts"
-THREAD_POOL_SIZE = 8  # Use a thread pool for parallel API calls
+THREAD_POOL_SIZE = 8
+lock = threading.Lock()  # A lock for thread-safe printing
 
-# --- Full Comic Script ---
-# A list of lists. Each inner list represents a frame and contains
-# dicts for each piece of audio ('role' and 'text').
+# --- Retry Configuration for Network Errors ---
+RETRY_COUNT = 3
+RETRY_DELAY_SECONDS = 2
 
+# --- Full Comic Script (Same as before) ---
 COMIC_SCRIPT = [
     # Frame 1
     [
@@ -226,7 +218,7 @@ COMIC_SCRIPT = [
     [
         {
             "role": "narrator",
-            "text": "But for Tedi, the discovery was always tied to a person, a place, and a simple, elegant chain.",
+            "text": "For Tedi, the discovery was always tied to a person, a place, and a simple, elegant chain.",
         }
     ],
     # Frame 30
@@ -239,28 +231,46 @@ COMIC_SCRIPT = [
 ]
 
 
-def generate_audio_part(role, text):
-    """Calls the Replicate API to generate a single audio clip."""
+def safe_print(*args, **kwargs):
+    """A thread-safe print function."""
+    with lock:
+        print(*args, **kwargs)
+
+
+def generate_audio_with_retries(role, text):
+    """
+    FIX #2: Calls the Replicate API with a retry mechanism for network errors.
+    """
     voice = VOICES.get(role)
     if not voice:
         raise ValueError(f"No voice defined for role: {role}")
 
-    print(f"   - Generating audio for role '{role}' with voice '{voice}'...")
-    try:
-        output_url = replicate.run(
-            "resemble-ai/chatterbox-pro",
-            input={
-                "pitch": "medium",
-                "voice": voice,
-                "prompt": text,
-                "temperature": 0.8,
-                "exaggeration": 0.5,
-            },
-        )
-        return output_url
-    except Exception as e:
-        print(f"   - Replicate API call failed for role '{role}': {e}")
-        return None
+    for attempt in range(RETRY_COUNT):
+        try:
+            output_url = replicate.run(
+                "resemble-ai/chatterbox-pro",
+                input={
+                    "pitch": "medium",
+                    "voice": voice,
+                    "prompt": text,
+                    "temperature": 0.8,
+                    "exaggeration": 0.5,
+                },
+            )
+            return output_url
+        except Exception as e:
+            if "timed out" in str(e).lower() and attempt < RETRY_COUNT - 1:
+                delay = RETRY_DELAY_SECONDS * (2**attempt)
+                safe_print(
+                    f"   - Network timeout for role '{role}'. Retrying in {delay}s... ({attempt + 1}/{RETRY_COUNT})"
+                )
+                time.sleep(delay)
+            else:
+                safe_print(
+                    f"   - Replicate API call failed permanently for role '{role}': {e}"
+                )
+                return None
+    return None
 
 
 def download_file(url, destination):
@@ -273,21 +283,24 @@ def download_file(url, destination):
                 f.write(chunk)
         return True
     except Exception as e:
-        print(f"   - Failed to download {url}: {e}")
+        safe_print(f"   - Failed to download {url}: {e}")
         return False
 
 
 def combine_audio_with_ffmpeg(input_files, output_file):
-    """Combines multiple WAV files into one using ffmpeg's concat demuxer."""
-    # Create a temporary file list for ffmpeg
-    list_filename = os.path.join(TEMP_DIR, f"concat_list_{int(time.time() * 1000)}.txt")
+    """
+    FIX #1: Combines multiple WAV files using ffmpeg and absolute paths.
+    """
+    list_filename = os.path.join(
+        TEMP_DIR, f"concat_list_{os.path.basename(output_file)}.txt"
+    )
     with open(list_filename, "w") as f:
         for filename in input_files:
-            # Ffmpeg requires forward slashes and escaped special characters
-            safe_path = filename.replace("\\", "/").replace("'", "'\\''")
+            # Use absolute paths to prevent any ambiguity for ffmpeg
+            absolute_path = os.path.abspath(filename)
+            safe_path = absolute_path.replace("\\", "/").replace("'", "'\\''")
             f.write(f"file '{safe_path}'\n")
 
-    # Construct and run the ffmpeg command
     command = [
         "ffmpeg",
         "-f",
@@ -298,107 +311,108 @@ def combine_audio_with_ffmpeg(input_files, output_file):
         list_filename,
         "-c",
         "copy",
-        "-y",  # Overwrite output file if it exists
+        "-y",
         output_file,
     ]
 
-    print(
+    safe_print(
         f"   - Combining {len(input_files)} parts into {os.path.basename(output_file)}..."
     )
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
-        # Clean up the temporary list file
-        os.remove(list_filename)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"   - FFmpeg Error for {os.path.basename(output_file)}:")
-        print(f"   - STDOUT: {e.stdout}")
-        print(f"   - STDERR: {e.stderr}")
-        os.remove(list_filename)
+        safe_print(f"   - FFmpeg Error for {os.path.basename(output_file)}:")
+        safe_print(f"   - STDERR: {e.stderr}")
         return False
+    finally:
+        # Always clean up the temporary list file
+        if os.path.exists(list_filename):
+            os.remove(list_filename)
 
 
 def process_frame_audio(frame_script, index):
-    """Worker function to process all audio for a single frame."""
+    """
+    Worker function to process all audio for a single frame, ensuring all parts are
+    generated before attempting to combine.
+    """
     frame_number = index + 1
-    print(f"[Thread] Processing Frame {frame_number:02d}...")
+    safe_print(f"[Thread] Processing Frame {frame_number:02d}...")
 
+    if not frame_script:
+        safe_print(f"[Thread] Frame {frame_number:02d} has no script. Skipping.")
+        return
+
+    # STEP 1: Generate all audio parts for this frame first
+    audio_parts = []
+    for i, part in enumerate(frame_script):
+        safe_print(
+            f"   - Generating audio for frame {frame_number:02d}, part {i + 1} ('{part['role']}')"
+        )
+        url = generate_audio_with_retries(part["role"], part["text"])
+        if url:
+            audio_parts.append({"url": url, "index": i})
+        else:
+            safe_print(
+                f"[ERROR] Could not generate required audio for frame {frame_number:02d}. Aborting this frame."
+            )
+            return
+
+    # STEP 2: Download and combine
     final_output_path = os.path.join(
         AUDIO_OUTPUT_DIR, f"audio_frame_{frame_number:02d}.wav"
     )
 
-    if not frame_script:
-        print(f"[Thread] Frame {frame_number:02d} has no script. Skipping.")
-        return
-
-    # Generate all audio parts for the frame
-    part_urls = []
-    for i, part in enumerate(frame_script):
-        url = generate_audio_part(part["role"], part["text"])
-        if url:
-            part_urls.append((url, i))
-        else:
-            print(
-                f"[Error] Could not generate audio for frame {frame_number:02d}, part {i + 1}."
-            )
-            return  # Abort processing for this frame if a part fails
-
-    # Handle downloading and combining
-    if len(part_urls) == 1:
-        # Single audio clip, just download it directly
-        url, _ = part_urls[0]
-        if download_file(url, final_output_path):
-            print(f"[Thread] Frame {frame_number:02d} audio saved successfully.")
-    elif len(part_urls) > 1:
-        # Multiple clips, download to temp and combine
+    if len(audio_parts) == 1:
+        if download_file(audio_parts[0]["url"], final_output_path):
+            safe_print(f"[SUCCESS] Frame {frame_number:02d} audio saved.")
+    else:
         temp_files = []
-        for url, i in part_urls:
-            temp_path = os.path.join(
-                TEMP_DIR, f"temp_frame_{frame_number:02d}_part_{i + 1}.wav"
-            )
-            if download_file(url, temp_path):
-                temp_files.append(temp_path)
-            else:
-                print(
-                    f"[Error] Failed to download temp file for frame {frame_number:02d}."
+        try:
+            for part in audio_parts:
+                temp_path = os.path.join(
+                    TEMP_DIR,
+                    f"temp_frame_{frame_number:02d}_part_{part['index'] + 1}.wav",
                 )
-                return  # Abort if download fails
+                if download_file(part["url"], temp_path):
+                    temp_files.append(temp_path)
+                else:
+                    safe_print(
+                        f"[ERROR] Failed to download temp file for frame {frame_number:02d}. Aborting combine."
+                    )
+                    return  # Stop if a download fails
 
-        if len(temp_files) == len(part_urls):
-            if combine_audio_with_ffmpeg(temp_files, final_output_path):
-                print(
-                    f"[Thread] Frame {frame_number:02d} audio combined and saved successfully."
-                )
-            # Clean up temporary part files
+            if len(temp_files) == len(audio_parts):
+                if combine_audio_with_ffmpeg(temp_files, final_output_path):
+                    safe_print(
+                        f"[SUCCESS] Frame {frame_number:02d} audio combined and saved."
+                    )
+        finally:
+            # FIX #3: Ensure temporary files are always cleaned up for this frame
             for temp_file in temp_files:
-                os.remove(temp_file)
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
 
 
 def main():
     """Main function to orchestrate the audio generation process."""
-    print("--- Starting Comic Audio Generation ---")
-
-    # Create output directories if they don't exist
+    print("--- Starting Robust Comic Audio Generation ---")
     os.makedirs(AUDIO_OUTPUT_DIR, exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
     print(f"Audio will be saved to: '{AUDIO_OUTPUT_DIR}'")
-    print(f"Temporary files will use: '{TEMP_DIR}'")
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=THREAD_POOL_SIZE
     ) as executor:
-        # Submit all frames to be processed in parallel
         futures = [
             executor.submit(process_frame_audio, script, i)
             for i, script in enumerate(COMIC_SCRIPT)
         ]
-
-        # Wait for all futures to complete
         for future in concurrent.futures.as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                print(f"[Error] A thread raised an exception: {e}")
+                safe_print(f"[FATAL ERROR] A thread raised an unhandled exception: {e}")
 
     print("\n--- Comic Audio Generation Finished ---")
 
