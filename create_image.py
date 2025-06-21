@@ -21,17 +21,17 @@ if False:
 # Teri: "voice": "Orion"
 # Her: "voice": "Aurora"
 # Narrator: "voice": "Ember"
-# output_wav_file_url = replicate.run(
-#     "resemble-ai/chatterbox-pro",
-#     input={
-#         "pitch": "medium",
-#         "voice": "Orion",
-#         "prompt": "hello!",
-#         "temperature": 0.8,
-#         "exaggeration": 0.5,
-#     },
-# )
-# print(output_wav_file_url)
+output_wav_file_url = replicate.run(
+    "resemble-ai/chatterbox-pro",
+    input={
+        "pitch": "medium",
+        "voice": "Orion",
+        "prompt": "hello!",
+        "temperature": 0.8,
+        "exaggeration": 0.5,
+    },
+)
+print(output_wav_file_url)
 
 import replicate
 import requests
@@ -205,7 +205,7 @@ def generate_and_save_image(prompt_data, index, image_urls, output_dir):
         output_url = replicate.run(
             "black-forest-labs/flux-kontext-pro",
             input={
-                "prompt": prompt_text,
+                "prompt": prompt_text + " Make the characters be generally happy",
                 "input_image": input_image_url,
                 "aspect_ratio": "match_input_image",  # Maintain aspect ratio of base image
                 "output_format": "jpg",
@@ -266,4 +266,4 @@ def create_comic_story(prompts, image_urls, output_dir):
 
 
 if __name__ == "__main__":
-    create_comic_story(COMIC_PROMPTS, IMAGE_URLS, OUTPUT_DIR)
+    # create_comic_story(COMIC_PROMPTS, IMAGE_URLS, OUTPUT_DIR)
