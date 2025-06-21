@@ -2,43 +2,17 @@ import os
 import subprocess
 import glob
 import json
-import random
 import shutil
 
 # --- Configuration ---
 FRAMES_DIR = "comic_frames"
 AUDIO_DIR = "comic_audio"
 TEMP_VIDEO_DIR = "temp_video_segments"
-OUTPUT_FILENAME = "comic_slideshow.mp4"
+OUTPUT_FILENAME = "comic_slideshow_final.mp4"  # New name to avoid confusion
 
-# Video settings
+# Video settings for each segment
 RESOLUTION = "1024x1024"
 FRAME_RATE = 30
-TRANSITION_DURATION = 1  # in seconds
-
-# A list of cool ffmpeg xfade transitions.
-# See more here: https://ffmpeg.org/ffmpeg-filters.html#xfade
-TRANSITIONS = [
-    "fade",
-    "wipeleft",
-    "wiperight",
-    "wipeup",
-    "wipedown",
-    "slideleft",
-    "slideright",
-    "slideup",
-    "slidedown",
-    "circlecrop",
-    "rectcrop",
-    "distance",
-    "fadegrays",
-    "radial",
-    "diagtl",
-    "diagtr",
-    "diagbl",
-    "diagbr",
-    "dissolve",
-]
 
 
 def check_ffmpeg():
@@ -71,26 +45,31 @@ def get_audio_duration(audio_path):
         "-show_streams",
         audio_path,
     ]
-    result = subprocess.run(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-    if result.returncode != 0:
-        print(f"Error getting duration for {audio_path}: {result.stderr}")
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        info = json.loads(result.stdout)
+        if "format" in info and "duration" in info["format"]:
+            return float(info["format"]["duration"])
+        print(
+            f"Warning: Could not determine duration from format for {audio_path}. Trying streams."
+        )
+        if "streams" in info and info["streams"] and "duration" in info["streams"][0]:
+            return float(info["streams"][0]["duration"])
+        print(f"Error: Could not determine duration for {audio_path}")
         return None
-
-    info = json.loads(result.stdout)
-    # Check format duration first, fallback to stream duration
-    if "format" in info and "duration" in info["format"]:
-        return float(info["format"]["duration"])
-    elif "streams" in info and info["streams"] and "duration" in info["streams"][0]:
-        return float(info["streams"][0]["duration"])
-    else:
-        print(f"Could not determine duration for {audio_path}")
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        print(f"Error getting duration for {audio_path}: {e}")
         return None
 
 
 def create_video_segments(image_files, audio_files):
-    """Creates individual video clips for each frame-audio pair."""
+    """Creates individual video clips for each frame-audio pair. This part remains the same."""
     print(f"\n--- Step 1: Creating {len(image_files)} individual video segments ---")
     os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
 
@@ -98,15 +77,17 @@ def create_video_segments(image_files, audio_files):
     for i, (img_path, audio_path) in enumerate(zip(image_files, audio_files)):
         segment_num = i + 1
         output_path = os.path.join(TEMP_VIDEO_DIR, f"segment_{segment_num:02d}.mp4")
-        segment_paths.append(output_path)
 
         duration = get_audio_duration(audio_path)
+        # Add a small buffer to prevent audio from being cut off early
         if duration is None:
-            print(f"Skipping segment {segment_num} due to missing duration.")
+            print(f"Skipping segment {segment_num} due to missing audio duration.")
             continue
 
+        duration += 0.1  # Add 100ms buffer
+
         print(
-            f"Creating segment {segment_num}/{len(image_files)} (Duration: {duration:.2f}s)..."
+            f"Creating segment {segment_num}/{len(image_files)} for {os.path.basename(img_path)} (Duration: {duration:.2f}s)..."
         )
 
         command = [
@@ -126,78 +107,65 @@ def create_video_segments(image_files, audio_files):
             "-b:a",
             "192k",  # Audio bitrate
             "-pix_fmt",
-            "yuv420p",  # Pixel format for compatibility
+            "yuv420p",  # Pixel format for broad compatibility
             "-s",
             RESOLUTION,  # Set video size
             "-r",
             str(FRAME_RATE),  # Set frame rate
+            "-shortest",  # Finish encoding when the shortest stream ends (the audio)
             "-t",
-            str(duration),  # Set duration of the clip
-            "-y",  # Overwrite output file if it exists
+            str(duration),  # Explicitly set duration as a fallback
+            "-y",  # Overwrite output file
             output_path,
         ]
 
-        # Run the command, hide output unless there's an error
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(command, capture_output=True)
         if result.returncode != 0:
-            print(f"❌ Error creating segment {segment_num}:")
-            print(result.stderr.decode())
+            print(f"❌ Error creating segment {segment_num}:\n{result.stderr.decode()}")
+        else:
+            segment_paths.append(output_path)
 
     print("✅ All video segments created.")
     return segment_paths
 
 
-def create_final_video(segment_paths):
-    """Combines all video segments with transitions into a final movie."""
-    print("\n--- Step 2: Combining segments with transitions ---")
+def create_final_video_simple(segment_paths):
+    """
+    Combines all video segments using the reliable `concat` filter (hard cuts).
+    This function replaces the complex transition logic.
+    """
+    print("\n--- Step 2: Combining segments with hard cuts (concat filter) ---")
     if not segment_paths:
-        print("No segments to combine. Aborting.")
+        print("No valid segments were created. Aborting final video creation.")
         return
 
-    # --- Build the complex ffmpeg command ---
-    command = ["ffmpeg"]
+    # Create a text file listing all the segment files for ffmpeg's concat demuxer.
+    # This is the most robust method for concatenation.
+    list_file_path = os.path.join(TEMP_VIDEO_DIR, "concat_list.txt")
+    with open(list_file_path, "w") as f:
+        for path in segment_paths:
+            # Ffmpeg requires forward slashes and escaped special characters
+            safe_path = os.path.abspath(path).replace("\\", "/").replace("'", "'\\''")
+            f.write(f"file '{safe_path}'\n")
 
-    # 1. Add all segments as inputs
-    for seg_path in segment_paths:
-        command.extend(["-i", seg_path])
+    command = [
+        "ffmpeg",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list_file_path,
+        "-c",
+        "copy",  # Copy streams without re-encoding, it's fast and preserves quality
+        "-y",
+        OUTPUT_FILENAME,
+    ]
 
-    # 2. Build the filter_complex string
-    filter_complex = []
-    num_segments = len(segment_paths)
+    print("Executing final render command...")
+    # print(" ".join(command)) # Uncomment to see the full command
 
-    # Video chain
-    prev_video_stream = "[0:v]"
-    for i in range(1, num_segments):
-        transition = random.choice(TRANSITIONS)
-        current_video_stream = f"[{i}:v]"
-        output_stream = f"[v{i}]"
-
-        # Calculate the start time of the transition
-        offset_command = f"xfade=transition={transition}:duration={TRANSITION_DURATION}"
-
-        filter_complex.append(
-            f"{prev_video_stream}{current_video_stream}{offset_command}{output_stream}"
-        )
-        prev_video_stream = output_stream
-
-    # Audio chain
-    audio_streams = "".join([f"[{i}:a]" for i in range(num_segments)])
-    audio_concat = f"{audio_streams}concat=n={num_segments}:v=0:a=1[outa]"
-    filter_complex.append(audio_concat)
-
-    command.extend(["-filter_complex", ";".join(filter_complex)])
-
-    # 3. Map the final output streams
-    command.extend(["-map", prev_video_stream, "-map", "[outa]"])
-
-    # 4. Add final output settings
-    command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", OUTPUT_FILENAME])
-
-    print("Executing final render command. This may take a while...")
-    # Uncomment the line below to see the full ffmpeg command being executed
-    # print(" ".join(command))
-
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, capture_output=True)
     if result.returncode == 0:
         print(f"✅ Final video successfully created: {OUTPUT_FILENAME}")
     else:
@@ -218,7 +186,6 @@ def main():
     if not check_ffmpeg():
         return
 
-    # Validate input directories
     if not os.path.isdir(FRAMES_DIR) or not os.path.isdir(AUDIO_DIR):
         print(
             f"Error: Input directories '{FRAMES_DIR}' and/or '{AUDIO_DIR}' not found."
@@ -228,19 +195,14 @@ def main():
     image_files = sorted(glob.glob(os.path.join(FRAMES_DIR, "*.jpg")))
     audio_files = sorted(glob.glob(os.path.join(AUDIO_DIR, "*.wav")))
 
-    if not image_files or not audio_files or len(image_files) != len(audio_files):
+    if not image_files or len(image_files) != len(audio_files):
         print(
             "Error: Mismatch in number of image and audio files, or folders are empty."
         )
-        print(f"Found {len(image_files)} images and {len(audio_files)} audio files.")
         return
 
-    # --- Run the process ---
     video_segments = create_video_segments(image_files, audio_files)
-
-    if video_segments:
-        create_final_video(video_segments)
-
+    create_final_video_simple(video_segments)
     cleanup()
 
 
