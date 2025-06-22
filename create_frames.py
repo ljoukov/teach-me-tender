@@ -6,10 +6,15 @@ import concurrent.futures
 
 # Base images for the characters
 # The model will use these as a starting point to generate the scenes.
+# IMAGE_URLS = {
+#     "him": "https://pixtoon-media.eviworld.com/teach-me-tender/teri.jpeg",
+#     "her": "https://pixtoon-media.eviworld.com/teach-me-tender/her.jpeg",
+#     "both": "https://pixtoon-media.eviworld.com/teach-me-tender/both.jpeg",
+# }
 IMAGE_URLS = {
-    "him": "https://pixtoon-media.eviworld.com/teach-me-tender/teri.jpeg",
-    "her": "https://pixtoon-media.eviworld.com/teach-me-tender/her.jpeg",
-    "both": "https://pixtoon-media.eviworld.com/teach-me-tender/both.jpeg",
+    "him": "https://pixtoon-media.eviworld.com/teach-me-tender/him.png",
+    "her": "https://pixtoon-media.eviworld.com/teach-me-tender/her.png",
+    "both": "https://pixtoon-media.eviworld.com/teach-me-tender/both.png",
 }
 
 # Output directory for the comic frames
@@ -170,7 +175,7 @@ def generate_and_save_image(prompt_data, index, image_urls, output_dir):
         output_url = replicate.run(
             "black-forest-labs/flux-kontext-pro",
             input={
-                "prompt": prompt_text + " Make the characters be generally happy",
+                "prompt": prompt_text,
                 "input_image": input_image_url,
                 "aspect_ratio": "match_input_image",  # Maintain aspect ratio of base image
                 "output_format": "jpg",
