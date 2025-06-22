@@ -16,19 +16,20 @@ VOICES = {"narrator": "Ember", "him": "Orion", "her": "Aurora"}
 AUDIO_OUTPUT_DIR = "comic_audio"
 TEMP_DIR = "temp_audio_parts"
 THREAD_POOL_SIZE = 8
-lock = threading.Lock()  # A lock for thread-safe printing
+lock = threading.Lock()
 
 # --- Retry Configuration for Network Errors ---
 RETRY_COUNT = 3
 RETRY_DELAY_SECONDS = 2
 
-# --- Full Comic Script (Same as before) ---
+# --- Full Comic Script (UPDATED) ---
+# Parenthetical comments have been removed from the 'text' fields.
 COMIC_SCRIPT = [
     # Frame 1
     [
         {
             "role": "narrator",
-            "text": "York University, Toronto. 2015. For Tedi, most of a software engineering degree was learning systems that felt too simple. The real puzzles weren't in the classroom.",
+            "text": "For gifted software student Tedi, his York University classes were uninspiring. He needed a real-world puzzle.",
         }
     ],
     # Frame 2
@@ -37,7 +38,7 @@ COMIC_SCRIPT = [
     [
         {
             "role": "her",
-            "text": "(Muttering to herself) It’s just noise. The dataset is all noise. How can anything this important be so... messy?",
+            "text": "It’s just noise. The dataset is all noise. How can anything this important be so... messy?",
         }
     ],
     # Frame 4
@@ -48,7 +49,7 @@ COMIC_SCRIPT = [
         },
         {
             "role": "her",
-            "text": "(A little startled) Oh! No, it’s all yours. Welcome to the disaster zone.",
+            "text": "Oh! No, it’s all yours. Welcome to the disaster zone.",
         },
     ],
     # Frame 5
@@ -89,9 +90,9 @@ COMIC_SCRIPT = [
     [
         {
             "role": "him",
-            "text": "(Frustrated sigh) It’s no good. The protein is just too big. We’re missing a logical shortcut.",
+            "text": "It’s no good. The protein is just too big. We’re missing a logical shortcut.",
         },
-        {"role": "her", "text": "(Quietly) Maybe... we’re thinking about it wrong."},
+        {"role": "her", "text": "Maybe... we’re thinking about it wrong."},
     ],
     # Frame 10
     [
@@ -111,7 +112,7 @@ COMIC_SCRIPT = [
     [
         {
             "role": "him",
-            "text": "(A sudden insight) Tiny, weak connections... scattered along a line... The noise... it wasn't a bug.",
+            "text": "Tiny, weak connections... scattered along a line... The noise... it wasn't a bug.",
         }
     ],
     # Frame 13
@@ -142,7 +143,7 @@ COMIC_SCRIPT = [
             "role": "him",
             "text": "Okay. I’m running it. This will either be the most beautiful thing we’ve ever seen, or it will melt the server.",
         },
-        {"role": "her", "text": "(A nervous smile in her voice) Let’s find out."},
+        {"role": "her", "text": "Let’s find out."},
     ],
     # Frame 17
     [{"role": "narrator", "text": "The seconds stretched into an eternity."}],
@@ -156,12 +157,7 @@ COMIC_SCRIPT = [
         }
     ],
     # Frame 20
-    [
-        {
-            "role": "her",
-            "text": "(In awe, voice trembling slightly) Tedi... look. Right there.",
-        }
-    ],
+    [{"role": "her", "text": "Tedi... look. Right there."}],
     # Frame 21
     [
         {
@@ -192,7 +188,7 @@ COMIC_SCRIPT = [
         }
     ],
     # Frame 25
-    [{"role": "her", "text": "(Softly) Thank you."}],
+    [{"role": "her", "text": "Thank you."}],
     # Frame 26
     [
         {
@@ -238,9 +234,7 @@ def safe_print(*args, **kwargs):
 
 
 def generate_audio_with_retries(role, text):
-    """
-    FIX #2: Calls the Replicate API with a retry mechanism for network errors.
-    """
+    """Calls the Replicate API with a retry mechanism for network errors."""
     voice = VOICES.get(role)
     if not voice:
         raise ValueError(f"No voice defined for role: {role}")
@@ -288,15 +282,12 @@ def download_file(url, destination):
 
 
 def combine_audio_with_ffmpeg(input_files, output_file):
-    """
-    FIX #1: Combines multiple WAV files using ffmpeg and absolute paths.
-    """
+    """Combines multiple WAV files using ffmpeg and absolute paths."""
     list_filename = os.path.join(
         TEMP_DIR, f"concat_list_{os.path.basename(output_file)}.txt"
     )
     with open(list_filename, "w") as f:
         for filename in input_files:
-            # Use absolute paths to prevent any ambiguity for ffmpeg
             absolute_path = os.path.abspath(filename)
             safe_path = absolute_path.replace("\\", "/").replace("'", "'\\''")
             f.write(f"file '{safe_path}'\n")
@@ -326,16 +317,12 @@ def combine_audio_with_ffmpeg(input_files, output_file):
         safe_print(f"   - STDERR: {e.stderr}")
         return False
     finally:
-        # Always clean up the temporary list file
         if os.path.exists(list_filename):
             os.remove(list_filename)
 
 
 def process_frame_audio(frame_script, index):
-    """
-    Worker function to process all audio for a single frame, ensuring all parts are
-    generated before attempting to combine.
-    """
+    """Worker function to process all audio for a single frame."""
     frame_number = index + 1
     safe_print(f"[Thread] Processing Frame {frame_number:02d}...")
 
@@ -343,7 +330,6 @@ def process_frame_audio(frame_script, index):
         safe_print(f"[Thread] Frame {frame_number:02d} has no script. Skipping.")
         return
 
-    # STEP 1: Generate all audio parts for this frame first
     audio_parts = []
     for i, part in enumerate(frame_script):
         safe_print(
@@ -358,7 +344,6 @@ def process_frame_audio(frame_script, index):
             )
             return
 
-    # STEP 2: Download and combine
     final_output_path = os.path.join(
         AUDIO_OUTPUT_DIR, f"audio_frame_{frame_number:02d}.wav"
     )
@@ -380,7 +365,7 @@ def process_frame_audio(frame_script, index):
                     safe_print(
                         f"[ERROR] Failed to download temp file for frame {frame_number:02d}. Aborting combine."
                     )
-                    return  # Stop if a download fails
+                    return
 
             if len(temp_files) == len(audio_parts):
                 if combine_audio_with_ffmpeg(temp_files, final_output_path):
@@ -388,7 +373,6 @@ def process_frame_audio(frame_script, index):
                         f"[SUCCESS] Frame {frame_number:02d} audio combined and saved."
                     )
         finally:
-            # FIX #3: Ensure temporary files are always cleaned up for this frame
             for temp_file in temp_files:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
@@ -396,7 +380,7 @@ def process_frame_audio(frame_script, index):
 
 def main():
     """Main function to orchestrate the audio generation process."""
-    print("--- Starting Robust Comic Audio Generation ---")
+    print("--- Starting Final Comic Audio Generation ---")
     os.makedirs(AUDIO_OUTPUT_DIR, exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
     print(f"Audio will be saved to: '{AUDIO_OUTPUT_DIR}'")
